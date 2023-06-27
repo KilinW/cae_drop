@@ -1,0 +1,17 @@
+{
+  "configurations": [
+    {
+      "name": "Pico",
+      "includePath": [
+        "${workspaceFolder}/**",
+        "${env:PICO_SDK_PATH}/**"
+      ],
+      "defines": [],
+      "cStandard": "c11",
+      "cppStandard": "c++11",
+      "intelliSenseMode": "linux-gcc-arm",
+      "configurationProvider": "ms-vscode.cmake-tools"
+    }
+  ],
+  "version": 4
+}
