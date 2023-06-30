@@ -7,10 +7,50 @@
 #include <stdio.h>
 #include <math.h>
 #include <iostream>
+#include <vector>
+#include <tuple>
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
+#include "scicpp/core.hpp"
 
 using namespace std;
+
+double solution(double t)
+{
+
+    int C = 1;
+    return (C * std::exp(t) - t - 1);
+}
+
+std::tuple<std::vector<double>, std::vector<double>> methodRuneKutt(float (*function)(float t, float para), double runSize)
+{
+
+    std::vector<double> diffEq;
+    std::vector<double> time;
+    double xi, k1, k2, k3, k4, k5, k6;
+    float dt = 0.5;
+    float t = 0;
+    double x0 = solution(0);
+
+    time.push_back(0);
+    diffEq.push_back(x0);
+
+    for (int i = 1; i < runSize; i++)
+    {
+        k1 = dt * function(t, diffEq[i - 1]);
+        k2 = dt * function(t + 0.5 * dt, diffEq[i - 1] + 0.5 * k1);
+        k3 = dt * function(t + 0.5 * dt, diffEq[i - 1] + 0.5 * k2);
+        k4 = dt * function(t + dt, diffEq[i - 1] + k3);
+        xi = diffEq[i-1] + 1.0/6.0*(k1 + 2*k2 + 2*k3 + k4 );
+
+        diffEq.push_back(xi);
+        time.push_back(i);
+        t += dt;
+    }
+
+    return std::make_tuple (time, diffEq);
+}
+
 
 class piezo_film{
 public:
@@ -55,27 +95,30 @@ public:
 
     float alpha;
     float det_value;
-    float cos;
-    float sin;
-    float cosh;
-    float sinh;
-    float cos_L;
-    float sin_L;
-    float cosh_L;
-    float sinh_L;
-    float cos_2L;
-    float sin_2L;
-    float cosh_2L;
-    float sinh_2L;
+    float cos, sin, cosh, sinh;
+    float cos_L, sin_L, cosh_L, sinh_L;
+    float cos_2L, sin_2L, cosh_2L, sinh_2L;
     float sigma;
-    float A1;    
+    float A1;
+    float eq_solver_arr[5]; // [ Cp, R, vphi, zeta, omega ]
+    float eta1, eta1dot, v2, eta1ddot,v2dot;
+    float eq_solver_arr2[3];
 
     void cal_properties();
     float get_A1();
     float det_A();
     float phi(float x);
     float d_phi(float x);
+    float* cantilever_actuator_eq_solver(float t,float in_[],float para[]);
+    void voltage(float para[]);
+    void time_span(float time_span,float step);
+    void tip_mass(float mass);
+    void set_force(float force_func);
+    void total_damping(float damping);
+    void load_resistance(float resistance);
+    void piezo_coupling(float coupling);
 };
+
 
 piezo_film::piezo_film(){
     debug = false;
@@ -119,7 +162,9 @@ void piezo_film::cal_properties(){
 }
 
 float piezo_film::get_A1(){
-    alpha = 1.0;                                            // ??
+    alpha = 1.0;//scicpp::units::quantity::root(det_A());
+        // ??? root(self.det_A, 0).x[0]
+        // https://github.com/tvanderbruggen/Scicpp/tree/master
     float get_A1_var = alpha*L1;
     cos_L = std::cos(get_A1_var);
     sin_L = std::sin(get_A1_var);
@@ -141,15 +186,22 @@ float piezo_film::get_A1(){
                             +sin_2L
                             +sinh_2L
                             +4*cos_L*sinh_L)*m1));
-    if (debug ==true)
+    if (debug == true)
         cout << "Natural frequency omega: {self.alpha**2*math.sqrt(self.EI1/self.m1)}\n";
     return A1;
-}
+};
 
 float piezo_film::det_A(){
-                                                            // ??
+    cos = std::cos(alpha*L1);
+    sin = std::sin(alpha*L1);
+    cosh = std::cosh(alpha*L1);
+    sinh = std::sinh(alpha*L1);
+    det_value = (1 + cos*cosh
+                +(M1*alpha/m1)*(cos*sinh-sin*cosh)
+                -(J1*pow(alpha,3)/m1)*(cosh*sin+sinh*cos)
+                -(M1*J1*pow(alpha,4)/m1*m1)*(cos*cosh-1));
     return det_value;
-}
+};
 
 float piezo_film::phi(float x){
     return A1*(std::cos(alpha*x)
@@ -160,16 +212,63 @@ float piezo_film::phi(float x){
 
 float piezo_film::d_phi(float x){
     return A1*alpha*(-std::sin(alpha*x)
-            -std::sinh(alpha*x)
-            +sigma*std::cos(alpha*x) 
-            -sigma*std::cosh(alpha*x));
+                    -std::sinh(alpha*x)
+                    +sigma*(std::cos(alpha*x) 
+                            -std::cosh(alpha*x)));
+};
+
+float* piezo_film::cantilever_actuator_eq_solver(float t,float in_[],float para[]){
+    eq_solver_arr[0] = *para; // [ Cp, R, vphi, zeta, omega ]
+    eta1 = in_[ 0 ];
+    eta1dot = in_[ 1 ];
+    v2 = in_[ 2 ];
+    eta1ddot = -2 * eq_solver_arr[3] * eq_solver_arr[4] * eta1dot - eq_solver_arr[4]*eq_solver_arr[4] * eta1 - eq_solver_arr[2]*v2 - force;
+    v2dot = -1 / ( eq_solver_arr[0]*eq_solver_arr[1] ) * v2 + eq_solver_arr[2]/eq_solver_arr[0]*eta1dot;
+    eq_solver_arr2[0] = eta1dot;
+    eq_solver_arr2[1] = eta1ddot;
+    eq_solver_arr2[2] = v2dot;
+    return eq_solver_arr2;
+};
+
+void piezo_film::voltage(float para[]){
+    eq_solver_arr[2] = vtheta*(d_phi(Lp2) - d_phi(Lp1));
+    para[0] = eq_solver_arr[0];
+    para[1] = eq_solver_arr[1];
+    para[2] = eq_solver_arr[2];
+    para[3] = eq_solver_arr[3];
+    para[4] = alpha*alpha*sqrt(EI1/m1);
+    std::tuple<std::vector<double>, std::vector<double>>  diffRuneKutt = methodRuneKutt(cantilever_actuator_eq_solver, 5);
+    std::vector<double> time = std::get<0>(diffRuneKutt);
+    std::vector<double> solutionRuneKutt = std::get<1>(diffRuneKutt);
+    return std::make_tuple (time, solutionRuneKutt);
+    // return solve_ivp ????
+    // https://medium.com/geekculture/numerical-computation-in-c-part-2-33dcdbe6c726
+};
+
+void piezo_film::time_span(float time_span,float step){
+    time_end = time_span;
+    time_step = step;
+};
+void piezo_film::tip_mass(float mass){
+    M1 = mass;
+};
+void piezo_film::set_force(float force_func){
+    force = force_func;
+};
+void piezo_film::total_damping(float damping){
+    zeta = damping;
+};
+void piezo_film::load_resistance(float resistance){
+    R = resistance;
+};
+void piezo_film::piezo_coupling(float coupling){
+    vtheta = coupling;
 };
 
 int main() {
     stdio_init_all();
     if (cyw43_arch_init()) {
         printf("Wi-Fi init failed");
-        //return -1;
     }
     piezo_film A;
     while (true) {
